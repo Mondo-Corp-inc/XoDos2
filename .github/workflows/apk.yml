@@ -22,15 +22,29 @@ jobs:
   android-build:
     runs-on: ubuntu-latest
     outputs:
-      android-artifact: android-apk
+      android-present: ${{ steps.check.outputs.present }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Check Android platform folder
+        id: check
+        run: |
+          if [ -d "android" ]; then
+            echo "present=true" >> $GITHUB_OUTPUT
+            echo "Found android/ folder — Android build will run."
+          else
+            echo "present=false" >> $GITHUB_OUTPUT
+            echo "android/ folder not found — skipping Android build."
+          fi
+
+      # The rest runs only if android/ exists
       - name: Prepare workspace
+        if: steps.check.outputs.present == 'true'
         run: ls -la $HOME
 
       - name: Cache Flutter SDK
+        if: steps.check.outputs.present == 'true'
         id: cache-flutter
         uses: actions/cache@v3
         with:
@@ -39,50 +53,45 @@ jobs:
           restore-keys: |
             flutter-sdk-cache-
 
-      - name: Download & extract Flutter SDK (ZIP) or fallback to git if unusable
-        if: steps.cache-flutter.outputs.cache-hit != 'true'
+      - name: Download & extract Flutter SDK (ZIP) or fallback to git
+        if: steps.check.outputs.present == 'true' && steps.cache-flutter.outputs.cache-hit != 'true'
         run: |
           set -e
           sudo apt-get update -y
           sudo apt-get install -y unzip curl git || true
-
           echo "Downloading Flutter SDK from $FLUTTER_SDK_ZIP_URL"
           curl -L -sS "$FLUTTER_SDK_ZIP_URL" -o flutter.zip
           unzip -q flutter.zip -d $HOME || true
-
-          # Normalize folder to $HOME/flutter if possible
           if [ -d "$HOME/flutter" ]; then
             echo "Flutter folder exists at $HOME/flutter"
           else
             found=$(find $HOME -maxdepth 2 -type d -name "flutter*" | head -n 1 || true)
             if [ -n "$found" ]; then
-              echo "Moving extracted folder $found -> $HOME/flutter"
               mv "$found" "$HOME/flutter"
             fi
           fi
-
-          # Validate flutter binary, fallback to git clone if not usable
           if [ -x "$HOME/flutter/bin/flutter" ]; then
-            echo "Flutter binary found, running flutter --version"
             $HOME/flutter/bin/flutter --version || true
           else
-            echo "Downloaded SDK did not contain usable flutter binary. Falling back to git clone stable..."
             rm -rf $HOME/flutter || true
             git clone --depth 1 -b stable https://github.com/flutter/flutter.git $HOME/flutter
           fi
 
       - name: Add Flutter to PATH
+        if: steps.check.outputs.present == 'true'
         run: |
           echo "$HOME/flutter/bin" >> $GITHUB_PATH
           export PATH="$HOME/flutter/bin:$PATH"
           flutter --version
 
       - name: Set ANDROID_HOME and PATH
+        if: steps.check.outputs.present == 'true'
         run: |
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
           echo "PATH=$HOME/android-sdk/platform-tools:$HOME/android-sdk/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
 
       - name: Cache Android SDK
+        if: steps.check.outputs.present == 'true'
         id: cache-android
         uses: actions/cache@v3
         with:
@@ -92,12 +101,11 @@ jobs:
             android-sdk-cache-
 
       - name: Ensure Android SDK command-line tools & packages
+        if: steps.check.outputs.present == 'true'
         run: |
           export ANDROID_HOME="$HOME/android-sdk"
           export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-
           if ! command -v sdkmanager >/dev/null 2>&1; then
-            echo "Installing Android command-line tools..."
             mkdir -p "$ANDROID_HOME"
             curl -sS -L "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o cmdline-tools.zip
             unzip -q cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"
@@ -106,16 +114,13 @@ jobs:
             else
               mv "$ANDROID_HOME/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
             fi
-          else
-            echo "sdkmanager already available"
           fi
-
-          echo "Installing required platforms/build-tools/ndk..."
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
             "platforms;android-36" "build-tools;36.0.0" "platform-tools" "ndk;27.1.12297006" || true
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
       - name: Cache Gradle
+        if: steps.check.outputs.present == 'true'
         uses: actions/cache@v3
         with:
           path: |
@@ -124,25 +129,29 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
 
       - name: Cache pub packages
+        if: steps.check.outputs.present == 'true'
         uses: actions/cache@v3
         with:
           path: ~/.pub-cache
           key: flutter-packages-${{ hashFiles('pubspec.yaml') }}
 
       - name: Verify environment
+        if: steps.check.outputs.present == 'true'
         run: |
           echo "Flutter: $(which flutter || echo 'not found')"
           flutter --version || true
-          echo "ANDROID_HOME=$ANDROID_HOME"
           flutter doctor -v || true
 
       - name: Pub get
+        if: steps.check.outputs.present == 'true'
         run: flutter pub get
 
       - name: Build APK (release)
+        if: steps.check.outputs.present == 'true'
         run: flutter build apk --target-platform android-arm64 --split-per-abi
 
       - name: Prepare APK artifact and MD5
+        if: steps.check.outputs.present == 'true'
         run: |
           cd build/app/outputs/flutter-apk
           cp app-arm64-v8a-release.apk XoDos-${{ env.VERSION_TAG }}-arm64-v8a.apk
@@ -150,6 +159,7 @@ jobs:
           ls -la
 
       - name: Upload APK artifact
+        if: steps.check.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
@@ -164,12 +174,24 @@ jobs:
     runs-on: ubuntu-latest
     needs: android-build
     outputs:
-      linux-artifact: linux-bundle
+      linux-present: ${{ steps.check.outputs.present }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Check linux platform folder
+        id: check
+        run: |
+          if [ -d "linux" ]; then
+            echo "present=true" >> $GITHUB_OUTPUT
+            echo "Found linux/ folder — Linux build will run."
+          else
+            echo "present=false" >> $GITHUB_OUTPUT
+            echo "linux/ folder not found — skipping Linux build."
+          fi
+
       - name: Ensure Linux build dependencies
+        if: steps.check.outputs.present == 'true'
         run: |
           sudo apt-get update -y
           if ! dpkg -s libgtk-3-dev >/dev/null 2>&1; then
@@ -183,6 +205,7 @@ jobs:
           fi
 
       - name: Cache Flutter SDK (Linux)
+        if: steps.check.outputs.present == 'true'
         id: cache-flutter-linux
         uses: actions/cache@v3
         with:
@@ -191,8 +214,8 @@ jobs:
           restore-keys: |
             flutter-sdk-cache-linux-
 
-      - name: Download & extract Flutter SDK (ZIP) or fallback to git if unusable (Linux)
-        if: steps.cache-flutter-linux.outputs.cache-hit != 'true'
+      - name: Download & extract Flutter SDK (ZIP) or fallback to git (Linux)
+        if: steps.check.outputs.present == 'true' && steps.cache-flutter-linux.outputs.cache-hit != 'true'
         run: |
           set -e
           echo "Downloading Flutter SDK from $FLUTTER_SDK_ZIP_URL"
@@ -203,34 +226,35 @@ jobs:
           else
             found=$(find $HOME -maxdepth 2 -type d -name "flutter*" | head -n 1 || true)
             if [ -n "$found" ]; then
-              echo "Moving extracted folder $found -> $HOME/flutter"
               mv "$found" "$HOME/flutter"
             fi
           fi
           if [ -x "$HOME/flutter/bin/flutter" ]; then
-            echo "Flutter binary found, running flutter --version"
             $HOME/flutter/bin/flutter --version || true
           else
-            echo "Downloaded SDK did not contain usable flutter binary. Falling back to git clone stable..."
             rm -rf $HOME/flutter || true
             git clone --depth 1 -b stable https://github.com/flutter/flutter.git $HOME/flutter
           fi
 
       - name: Add Flutter to PATH
+        if: steps.check.outputs.present == 'true'
         run: |
           echo "$HOME/flutter/bin" >> $GITHUB_PATH
           export PATH="$HOME/flutter/bin:$PATH"
           flutter --version
 
       - name: Enable linux desktop
+        if: steps.check.outputs.present == 'true'
         run: |
           flutter config --enable-linux-desktop
           flutter doctor -v
 
       - name: Pub get
+        if: steps.check.outputs.present == 'true'
         run: flutter pub get
 
       - name: Build Linux release bundle
+        if: steps.check.outputs.present == 'true'
         run: |
           flutter build linux --release
           BUNDLE_DIR=build/linux/x64/release/bundle
@@ -243,6 +267,7 @@ jobs:
           fi
 
       - name: Upload Linux artifact
+        if: steps.check.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: linux-bundle
@@ -255,12 +280,25 @@ jobs:
     runs-on: windows-latest
     needs: android-build
     outputs:
-      windows-artifact: windows-zip
+      windows-present: ${{ steps.check.outputs.present }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Check windows platform folder
+        id: check
+        shell: powershell
+        run: |
+          if (Test-Path "windows") {
+            Write-Host "Found windows/ folder — Windows build will run."
+            Write-Host "present=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "windows/ folder not found — skipping Windows build."
+            Write-Host "present=false" >> $env:GITHUB_OUTPUT
+          }
+
       - name: Cache Flutter SDK (Windows)
+        if: steps.check.outputs.present == 'true'
         id: cache-flutter-win
         uses: actions/cache@v3
         with:
@@ -269,37 +307,23 @@ jobs:
           restore-keys: |
             flutter-sdk-cache-windows-
 
-      - name: Download & extract Flutter SDK (ZIP) or fallback to git if unusable (Windows)
-        if: steps.cache-flutter-win.outputs.cache-hit != 'true'
+      - name: Download & extract Flutter SDK (ZIP) or fallback to git (Windows)
+        if: steps.check.outputs.present == 'true' && steps.cache-flutter-win.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           try {
-            Write-Host "Downloading Flutter SDK from $env:FLUTTER_SDK_ZIP_URL"
             Invoke-WebRequest -Uri $env:FLUTTER_SDK_ZIP_URL -OutFile flutter.zip -UseBasicParsing
             Expand-Archive -Path flutter.zip -DestinationPath C:\ -Force
           } catch {
             Write-Warning "Failed to download/extract ZIP: $_"
+            git clone --depth 1 -b stable https://github.com/flutter/flutter.git C:\flutter
           }
-
-          # Normalize to C:\flutter if possible
-          if (Test-Path 'C:\flutter\bin\flutter.bat') {
-            Write-Host "Flutter available at C:\flutter"
-          } else {
-            $found = Get-ChildItem -Path C:\ -Directory -Filter "flutter*" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) {
-              Write-Host "Moving $($found.FullName) -> C:\flutter"
-              Remove-Item -Recurse -Force C:\flutter -ErrorAction SilentlyContinue
-              Move-Item $found.FullName C:\flutter
-            }
-          }
-
-          # If still not usable, fallback to git clone
           if (-not (Test-Path 'C:\flutter\bin\flutter.bat')) {
-            Write-Warning "Downloaded SDK not usable on Windows. Falling back to git clone stable..."
             git clone --depth 1 -b stable https://github.com/flutter/flutter.git C:\flutter
           }
 
       - name: Add Flutter to PATH (Windows)
+        if: steps.check.outputs.present == 'true'
         shell: powershell
         run: |
           echo "C:\flutter\bin" >> $env:GITHUB_PATH
@@ -307,71 +331,56 @@ jobs:
           flutter --version
 
       - name: Ensure Windows build prerequisites (detect & install allowed components)
+        if: steps.check.outputs.present == 'true'
         shell: powershell
         run: |
-          Write-Host "---- Checking Windows toolchain ----"
           $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
           if ($null -ne $cl) {
             Write-Host "MSVC found at: $($cl.Path)"
           } else {
-            Write-Warning "cl.exe not found in PATH. Trying vswhere to locate Visual Studio..."
+            Write-Warning "cl.exe not found. Trying vswhere..."
             $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
             if (Test-Path $vswhere) {
               $instPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
               if ($instPath) {
-                Write-Host "VS installation path: $instPath"
                 $msvc = Get-ChildItem -Path "$instPath\VC\Tools\MSVC" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
                 if ($msvc) {
                   $binPath = Join-Path $msvc.FullName "bin\Hostx64\x64"
                   if (Test-Path $binPath) {
-                    Write-Host "Found MSVC at $binPath"
                     echo $binPath >> $env:GITHUB_PATH
                   }
                 }
-              } else {
-                Write-Warning "vswhere did not find an MSVC-capable Visual Studio installation."
               }
-            } else {
-              Write-Warning "vswhere not found on runner."
             }
           }
-
-          # Install small, scriptable dependencies via Chocolatey (ninja, cmake, git) if missing
           function Install-ChocoIfMissing($name, $installArgs) {
             if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
-              Write-Host "$name not found. Installing via choco..."
               choco install $name -y --no-progress $installArgs
-            } else {
-              Write-Host "$name already installed."
             }
           }
-
           Install-ChocoIfMissing -name "ninja" -installArgs ""
           Install-ChocoIfMissing -name "cmake" -installArgs "--installargs 'ADD_CMAKE_TO_PATH=System'"
           Install-ChocoIfMissing -name "git" -installArgs ""
-
-          Write-Host "Final checks:"
-          Get-Command cl.exe -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "cl.exe -> $($_.Path)" }
-          Get-Command cmake -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "cmake -> $($_.Path)" }
-          Get-Command ninja -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "ninja -> $($_.Path)" }
           flutter doctor -v
-
           if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
-            Write-Error "MSVC compiler (cl.exe) not found. The job cannot continue. Ensure runner image includes 'Desktop development with C++' workload."
+            Write-Error "MSVC (cl.exe) not found. The job cannot continue. Ensure runner has 'Desktop development with C++' workload."
             exit 1
           }
 
       - name: Enable windows desktop
+        if: steps.check.outputs.present == 'true'
         shell: powershell
         run: |
           flutter config --enable-windows-desktop
           flutter doctor -v
 
       - name: Pub get (Windows)
+        if: steps.check.outputs.present == 'true'
         shell: powershell
         run: flutter pub get
 
       - name: Build Windows release
+        if: steps.check.outputs.present == 'true'
         shell: powershell
         run: |
           flutter build windows --release
@@ -381,7 +390,6 @@ jobs:
             if (Test-Path $zipName) { Remove-Item $zipName -Force }
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             [System.IO.Compression.ZipFile]::CreateFromDirectory($out, $zipName)
-            Write-Host "Created $zipName"
             Get-ChildItem -Path . -Filter $zipName
           } else {
             Write-Error "Windows release folder not found"
@@ -389,6 +397,7 @@ jobs:
           }
 
       - name: Upload Windows artifact
+        if: steps.check.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: windows-zip
@@ -401,63 +410,86 @@ jobs:
     runs-on: ubuntu-latest
     needs: [android-build, linux-build, windows-build]
     steps:
-      - name: Download Android artifact
+      - name: Create Git Tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag "v${{ env.VERSION_TAG }}" || true
+          git push origin "v${{ env.VERSION_TAG }}" || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release (empty - we'll attach assets conditionally)
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ env.VERSION_TAG }}
+          release_name: XoDos ${{ env.VERSION_TAG }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Download + attach Android artifact if present
+      - name: Download Android artifact (if produced)
+        if: ${{ needs.android-build.outputs.android-present == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: android-apk
           path: artifacts/android
 
-      - name: Download Linux artifact
+      - name: Upload Android release asset
+        if: ${{ needs.android-build.outputs.android-present == 'true' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/android/XoDos-${{ env.VERSION_TAG }}-arm64-v8a.apk
+          asset_name: XoDos-${{ env.VERSION_TAG }}-arm64-v8a.apk
+          asset_content_type: application/vnd.android.package-archive
+
+      - name: Upload Android MD5 (optional)
+        if: ${{ needs.android-build.outputs.android-present == 'true' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/android/md5.txt
+          asset_name: XoDos-${{ env.VERSION_TAG }}-arm64-v8a.md5.txt
+          asset_content_type: text/plain
+
+      # Download + attach Linux artifact if present
+      - name: Download Linux artifact (if produced)
+        if: ${{ needs.linux-build.outputs.linux-present == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: linux-bundle
           path: artifacts/linux
 
-      - name: Download Windows artifact
+      - name: Upload Linux release asset
+        if: ${{ needs.linux-build.outputs.linux-present == 'true' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/linux/XoDos-${{ env.VERSION_TAG }}-linux-x86_64.tar.gz
+          asset_name: XoDos-${{ env.VERSION_TAG }}-linux-x86_64.tar.gz
+          asset_content_type: application/gzip
+
+      # Download + attach Windows artifact if present
+      - name: Download Windows artifact (if produced)
+        if: ${{ needs.windows-build.outputs.windows-present == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: windows-zip
           path: artifacts/windows
 
-      - name: List downloaded artifacts
-        run: |
-          ls -la artifacts || true
-          ls -la artifacts/android || true
-          ls -la artifacts/linux || true
-          ls -la artifacts/windows || true
-
-      - name: Create Git Tag
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git tag "v${{ env.VERSION_TAG }}"
-          git push origin "v${{ env.VERSION_TAG }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release and attach files
-        uses: softprops/action-gh-release@v2
+      - name: Upload Windows release asset
+        if: ${{ needs.windows-build.outputs.windows-present == 'true' }}
+        uses: actions/upload-release-asset@v1
         with:
-          tag_name: ${{ env.VERSION_TAG }}
-          name: XoDos ${{ env.VERSION_TAG }}
-          body: |
-            📱 **XoDos Builds**
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/windows/XoDos-${{ env.VERSION_TAG }}-windows-x86_64.zip
+          asset_name: XoDos-${{ env.VERSION_TAG }}-windows-x86_64.zip
+          asset_content_type: application/zip
 
-            Version: **${{ env.VERSION_TAG }}
-
-            Contenu:
-            - Android APK: XoDos-${{ env.VERSION_TAG }}-arm64-v8a.apk
-            - Linux bundle: XoDos-${{ env.VERSION_TAG }}-linux-x86_64.tar.gz
-            - Windows bundle: XoDos-${{ env.VERSION_TAG }}-windows-x86_64.zip
-
-            ### 🧾 MD5 (Android)
-            ```
-            $(cat artifacts/android/md5.txt || echo "md5 not found")
-            ```
-          files: |
-            artifacts/android/XoDos-${{ env.VERSION_TAG }}-arm64-v8a.apk
-            artifacts/android/md5.txt
-            artifacts/linux/XoDos-${{ env.VERSION_TAG }}-linux-x86_64.tar.gz
-            artifacts/windows/XoDos-${{ env.VERSION_TAG }}-windows-x86_64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Show release URL
+        run: |
+          echo "Release created: ${{ steps.create_release.outputs.html_url || 'unknown' }}"
